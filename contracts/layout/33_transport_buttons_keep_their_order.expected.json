@@ -1,0 +1,34 @@
+{
+  "description": "The FireMonkey runtime mirrors transport controls as one live-geometry block. Rewind, play and stop keep their machine order while the block moves to the opposite side; ordinary controls mirror individually. The planner preserves designer coordinates and emits the form-level MirrorChildren contract.",
+  "catalog_file": "33_transport_buttons_keep_their_order.catalog.json",
+  "proposals": [
+    {
+      "name": "ContractForm",
+      "property": "MirrorChildren",
+      "value": "True",
+      "decision": "accepted"
+    }
+  ],
+  "controls": [
+    {
+      "form": "ContractForm",
+      "name": "btnRewind",
+      "planned_left_equals": 20
+    },
+    {
+      "form": "ContractForm",
+      "name": "btnPlay",
+      "planned_left_equals": 90
+    },
+    {
+      "form": "ContractForm",
+      "name": "btnStop",
+      "planned_left_equals": 160
+    },
+    {
+      "form": "ContractForm",
+      "name": "btnClose",
+      "planned_left_equals": 300
+    }
+  ]
+}

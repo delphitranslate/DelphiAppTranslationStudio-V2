@@ -1,0 +1,20 @@
+{
+  "description": "Code ownership is property-specific. The application owns lblHeading.Left, so the planner must not emit Left, but it may widen the translated heading and the same code will centre that new width.",
+  "catalog_file": "vcl_34_code_positioned_control_is_left_alone.catalog.json",
+  "proposals": [
+    {
+      "name": "lblHeading",
+      "property": "Width"
+    },
+    {
+      "name": "lblHeading",
+      "property": "Left",
+      "absent": true
+    },
+    {
+      "name": "lblOrdinary",
+      "property": "Width"
+    }
+  ],
+  "controls": [{"form":"ContractForm","name":"lblHeading","text_fits":true}]
+}

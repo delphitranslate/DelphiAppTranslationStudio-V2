@@ -1,0 +1,273 @@
+[CmdletBinding()]
+param()
+
+$ErrorActionPreference = 'Stop'
+
+$ProjectRoot = [System.IO.Path]::GetFullPath(
+    (Join-Path $PSScriptRoot '..\..'))
+$RsVars = 'C:\Program Files (x86)\Embarcadero\Studio\37.0\bin\rsvars.bat'
+$IntegrationSmokeDirectory = Join-Path $ProjectRoot 'export\IntegrationSmoke'
+$TargetIntegrationSmokeDirectory = Join-Path $ProjectRoot `
+    'export\TargetIntegrationSmoke'
+$TargetIntegrationPackagesDirectory = Join-Path $ProjectRoot `
+    'export\TargetIntegrationPackages'
+$TargetIntegrationBackupsDirectory = Join-Path $ProjectRoot `
+    'export\TargetIntegrationBackups'
+$CompleteResetSmokeDirectory = Join-Path $ProjectRoot `
+    'export\CompleteResetSmoke'
+$PilotPreferenceBackupDirectory = Join-Path `
+    ([System.IO.Path]::GetTempPath()) `
+    ('DAT-PilotPreferences-' + [Guid]::NewGuid().ToString('N'))
+$PilotPreferences = @()
+$SourceSearchPath = ((Get-ChildItem -LiteralPath (Join-Path $ProjectRoot 'source') `
+    -Directory | Select-Object -ExpandProperty FullName) -join ';')
+
+function Invoke-Compiler {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Compiler,
+        [Parameter(Mandatory = $true)]
+        [string]$Platform,
+        [Parameter(Mandatory = $true)]
+        [string]$SourceFile
+    )
+
+    $OutputDirectory = Join-Path $ProjectRoot "bin\$Platform\Debug"
+    $DcuDirectory = Join-Path $ProjectRoot "dcu\$Platform\Debug"
+    New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
+    New-Item -ItemType Directory -Path $DcuDirectory -Force | Out-Null
+
+    Push-Location $PSScriptRoot
+    try {
+        $Command = 'call "' + $RsVars + '" && ' + $Compiler +
+            ' -B -Q -U"' + $SourceSearchPath + '" -E"' +
+            $OutputDirectory + '" -N0"' +
+            $DcuDirectory + '" "' + $SourceFile + '"'
+        & cmd.exe /d /c $Command
+        if ($LASTEXITCODE -ne 0) {
+            throw "$Compiler failed for $SourceFile."
+        }
+    }
+    finally {
+        Pop-Location
+    }
+}
+
+function Invoke-GeneratedUnitCompiler {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Compiler,
+        [Parameter(Mandatory = $true)]
+        [string]$Platform,
+        [Parameter(Mandatory = $true)]
+        [string]$PackageName
+    )
+
+    $PackageDirectory = Join-Path $IntegrationSmokeDirectory $PackageName
+    $DcuDirectory = Join-Path $ProjectRoot "dcu\$Platform\Debug"
+    Push-Location $PackageDirectory
+    try {
+        $Command = 'call "' + $RsVars + '" && ' + $Compiler +
+            ' -B -Q -URuntime -N0"' + $DcuDirectory + '" "' +
+            $PackageName + '.Translation.pas"'
+        & cmd.exe /d /c $Command
+        if ($LASTEXITCODE -ne 0) {
+            throw "$Compiler failed for the generated $PackageName unit."
+        }
+    }
+    finally {
+        Pop-Location
+    }
+}
+
+function Invoke-SmokeExecutable {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Platform,
+        [Parameter(Mandatory = $true)]
+        [string]$ProgramName
+    )
+
+    $Executable = Join-Path $ProjectRoot "bin\$Platform\Debug\$ProgramName.exe"
+    & $Executable
+    if ($LASTEXITCODE -ne 0) {
+        throw "$ProgramName failed for $Platform."
+    }
+}
+
+function Invoke-IntegratedProjectBuild {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ProjectDirectory,
+        [Parameter(Mandatory = $true)]
+        [string]$ProjectFileName,
+        [Parameter(Mandatory = $true)]
+        [string]$Platform
+    )
+
+    Push-Location $ProjectDirectory
+    try {
+        $Command = 'call "' + $RsVars + '" && msbuild "' +
+            $ProjectFileName + '" /t:Build /p:Config=Debug /p:Platform=' +
+            $Platform + ' /v:minimal'
+        & cmd.exe /d /c $Command
+        if ($LASTEXITCODE -ne 0) {
+            throw "$ProjectFileName integration build failed for $Platform."
+        }
+    }
+    finally {
+        Pop-Location
+    }
+}
+
+function Test-IntegratedApplicationWindow {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Executable,
+        [Parameter(Mandatory = $true)]
+        [string]$ExpectedTitle
+    )
+
+    $Process = Start-Process -FilePath $Executable -PassThru
+    try {
+        $Deadline = (Get-Date).AddSeconds(8)
+        do {
+            Start-Sleep -Milliseconds 150
+            $Process.Refresh()
+        }
+        while (($Process.MainWindowTitle -ne $ExpectedTitle) -and
+            ((Get-Date) -lt $Deadline) -and (-not $Process.HasExited))
+
+        if ($Process.MainWindowTitle -ne $ExpectedTitle) {
+            throw "Integrated application did not open its expected form: $Executable"
+        }
+    }
+    finally {
+        if (-not $Process.HasExited) {
+            Stop-Process -Id $Process.Id -Force
+            $null = $Process.WaitForExit(5000)
+        }
+        $Process.Dispose()
+    }
+}
+
+function Set-PilotLanguagePreference {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ApplicationId
+    )
+
+    $PreferenceDirectory = Join-Path $env:LOCALAPPDATA $ApplicationId
+    $PreferenceFile = Join-Path $PreferenceDirectory 'language.ini'
+    $BackupFile = Join-Path $PilotPreferenceBackupDirectory `
+        ($ApplicationId + '.language.ini')
+    New-Item -ItemType Directory -Path `
+        $PilotPreferenceBackupDirectory -Force | Out-Null
+    $Existed = Test-Path -LiteralPath $PreferenceFile
+    if ($Existed) {
+        Copy-Item -LiteralPath $PreferenceFile -Destination $BackupFile -Force
+    }
+    New-Item -ItemType Directory -Path $PreferenceDirectory -Force | Out-Null
+    [System.IO.File]::WriteAllText(
+        $PreferenceFile,
+        "[Language]`r`nSelected=it-IT`r`n",
+        [System.Text.UTF8Encoding]::new($false))
+    $script:PilotPreferences += [pscustomobject]@{
+        Directory = $PreferenceDirectory
+        File = $PreferenceFile
+        Existed = $Existed
+        Backup = $BackupFile
+    }
+}
+
+function Deploy-PilotLanguagePacks {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$PackageName,
+        [Parameter(Mandatory = $true)]
+        [string]$ApplicationDirectory
+    )
+
+    $DeploymentScript = Join-Path $TargetIntegrationPackagesDirectory `
+        "$PackageName\Deploy-LanguagePacks.ps1"
+    & powershell.exe -ExecutionPolicy Bypass -File $DeploymentScript `
+        -ApplicationDirectory $ApplicationDirectory
+    if ($LASTEXITCODE -ne 0) {
+        throw "Language-pack deployment failed for $PackageName."
+    }
+}
+
+try {
+    Set-PilotLanguagePreference -ApplicationId 'SampleVCLApp'
+    Set-PilotLanguagePreference -ApplicationId 'SampleFMXApp'
+
+    foreach ($Target in @(
+        @{ Compiler = 'dcc32'; Platform = 'Win32' },
+        @{ Compiler = 'dcc64'; Platform = 'Win64' }
+    )) {
+        Invoke-Compiler @Target -SourceFile 'FoundationSmokeTests.dpr'
+        Invoke-SmokeExecutable -Platform $Target.Platform `
+            -ProgramName 'FoundationSmokeTests'
+
+        Invoke-Compiler @Target -SourceFile 'VCLRuntimeSmokeTests.dpr'
+        Invoke-Compiler @Target -SourceFile 'FMXRuntimeSmokeTests.dpr'
+        Invoke-SmokeExecutable -Platform $Target.Platform `
+            -ProgramName 'VCLRuntimeSmokeTests'
+        Invoke-SmokeExecutable -Platform $Target.Platform `
+            -ProgramName 'FMXRuntimeSmokeTests'
+    }
+
+    # The phase that stood here built four generated sample projects, deployed
+    # pilot language packs into them and opened each one to read its window
+    # title. All of it exercised the target-editing feature removed in 9b0b9e2,
+    # and the kits it worked on were produced by the tests removed with it, so
+    # it had nothing left to run against.
+
+    Write-Host 'Offline runtime smoke tests passed.'
+}
+finally {
+    foreach ($Preference in $PilotPreferences) {
+        if ($Preference.Existed) {
+            Copy-Item -LiteralPath $Preference.Backup `
+                -Destination $Preference.File -Force
+        }
+        elseif (Test-Path -LiteralPath $Preference.File) {
+            Remove-Item -LiteralPath $Preference.File -Force
+        }
+        if ((Test-Path -LiteralPath $Preference.Directory) -and
+            ((Get-ChildItem -LiteralPath `
+                $Preference.Directory -Force).Count -eq 0)) {
+            Remove-Item -LiteralPath $Preference.Directory -Force
+        }
+    }
+    if (Test-Path -LiteralPath $PilotPreferenceBackupDirectory) {
+        Remove-Item -LiteralPath $PilotPreferenceBackupDirectory `
+            -Recurse -Force
+    }
+
+    $CleanupDirectories = @(
+        $IntegrationSmokeDirectory,
+        $TargetIntegrationSmokeDirectory,
+        $TargetIntegrationPackagesDirectory,
+        $TargetIntegrationBackupsDirectory,
+        $CompleteResetSmokeDirectory,
+        (Join-Path $ProjectRoot 'export\bin\Samples\VCLBasic'),
+        (Join-Path $ProjectRoot 'export\bin\Samples\FMXBasic'),
+        (Join-Path $ProjectRoot 'export\dcu\Samples\VCLBasic'),
+        (Join-Path $ProjectRoot 'export\dcu\Samples\FMXBasic')
+    )
+    foreach ($CleanupDirectory in $CleanupDirectories) {
+        if (Test-Path -LiteralPath $CleanupDirectory) {
+            $ResolvedTarget = (Resolve-Path -LiteralPath `
+                $CleanupDirectory).Path
+            $ExportRoot = [System.IO.Path]::GetFullPath(
+                (Join-Path $ProjectRoot 'export'))
+            if (-not $ResolvedTarget.StartsWith(
+                $ExportRoot + [System.IO.Path]::DirectorySeparatorChar,
+                [System.StringComparison]::OrdinalIgnoreCase)) {
+                throw 'Unexpected integration smoke-test cleanup target.'
+            }
+            Remove-Item -LiteralPath $ResolvedTarget -Recurse -Force
+        }
+    }
+}

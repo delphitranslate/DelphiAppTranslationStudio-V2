@@ -1,0 +1,792 @@
+program LayoutContracts;
+
+{ Evaluates one layout contract.
+
+  A contract names a catalog of translated text for a small purpose-built form
+  and states what the analyser must do with it. The assertions are numeric,
+  because that is what layout is: a right edge that must not move, a control
+  that must keep its place, a caption that must still hold its text.
+
+  Called with the path to an expectation file. Exit code is 0 when every
+  assertion holds and 1 when any does not. }
+
+{$APPTYPE CONSOLE}
+
+uses
+  System.Classes,
+  System.SyncObjs,
+  System.Generics.Collections,
+  System.IOUtils,
+  System.JSON,
+  System.Math,
+  System.StrUtils,
+  System.SysUtils,
+  FMX.Forms,
+  FMX.TextLayout,
+  DAT.Core.Types in '..\..\source\core\DAT.Core.Types.pas',
+  DAT.Core.CatalogJson in '..\..\source\core\DAT.Core.CatalogJson.pas',
+  DAT.Scan.TextCodec in '..\..\source\scan\DAT.Scan.TextCodec.pas',
+  DAT.Review.CodeGeometry in '..\..\source\review\DAT.Review.CodeGeometry.pas',
+  DAT.Review.Localization in '..\..\source\review\DAT.Review.Localization.pas',
+  DAT.Review.TextMeasurement in '..\..\source\review\DAT.Review.TextMeasurement.pas',
+  DAT.Review.TextMeasurement.GDI in '..\..\source\review\DAT.Review.TextMeasurement.GDI.pas',
+  DAT.Review.TextMeasurement.FMX in '..\..\source\review\DAT.Review.TextMeasurement.FMX.pas';
+
+var
+  Failures: TStringList;
+
+function PaddingHorizontal(const AControl: TLayoutControl): Double;
+begin
+  if ContainsText(AControl.ComponentClassName, 'Button') then
+    Result := 12
+  else if ContainsText(AControl.ComponentClassName, 'Label') then
+    Result := 4
+  else
+    Result := 6;
+end;
+
+function PaddingVertical(const AControl: TLayoutControl): Double;
+begin
+  if ContainsText(AControl.ComponentClassName, 'Button') then
+    Result := 6
+  else if ContainsText(AControl.ComponentClassName, 'Label') then
+    Result := 2
+  else
+    Result := 3;
+end;
+
+{ Which framework the fixture under test describes. A contract that judged a
+  VCL layout with FireMonkey metrics would fail a correct plan and pass an
+  incorrect one, because the planner and the referee would be measuring with
+  different rulers. }
+var
+  ContractFramework: TTargetFramework = tfFireMonkey;
+
+function WidthOfText(const AText: string; const APointSize: Double): Double;
+var
+  Measurer: ITextMeasurer;
+begin
+  if Trim(AText) = '' then
+    Exit(0);
+  Measurer := TTextMeasurement.Measurer(ContractFramework);
+  if Measurer = nil then
+    Exit(0);
+  Result := Measurer.TextWidth(AText, Max(APointSize, 1), False);
+end;
+
+function PlannedFontOf(const AControl: TLayoutControl): Double;
+begin
+  Result := AControl.PlannedFontSize;
+  if Result <= 0 then
+    Result := AControl.FontSize;
+  if Result <= 0 then
+    Result := 12;
+end;
+
+{ The translated text still fits inside the control the analyser planned,
+  keeping the breathing room its class expects. }
+function TextFits(const AControl: TLayoutControl; out AWhy: string): Boolean;
+const
+  Slack = 2;
+var
+  TextWidth, Needed: Double;
+  Lines: Integer;
+begin
+  AWhy := '';
+  TextWidth := WidthOfText(AControl.TranslatedText, PlannedFontOf(AControl));
+  if TextWidth <= 0 then
+    Exit(True);
+  if not AControl.PlannedWordWrap then
+  begin
+    Needed := TextWidth + 2 * PaddingHorizontal(AControl);
+    Result := Needed <= AControl.PlannedWidth + Slack;
+    if not Result then
+      AWhy := Format('needs width %.0f with padding, has %.0f',
+        [Needed, AControl.PlannedWidth]);
+  end
+  else
+  begin
+    Lines := Max(1, Ceil(TextWidth /
+      Max(AControl.PlannedWidth - 2 * PaddingHorizontal(AControl), 1)));
+    Needed := Lines * PlannedFontOf(AControl) * 1.45 +
+      2 * PaddingVertical(AControl);
+    Result := Needed <= AControl.PlannedHeight + Slack;
+    if not Result then
+      AWhy := Format('wraps to %d line(s) needing height %.0f, has %.0f',
+        [Lines, Needed, AControl.PlannedHeight]);
+  end;
+end;
+
+function FindControl(const AReview: TLocalizationReview;
+  const AForm, AName: string): TLayoutControl;
+var
+  Candidate: TLayoutControl;
+begin
+  Result := nil;
+  for Candidate in AReview.Controls do
+    if SameText(Candidate.FormName, AForm) and
+      SameText(Candidate.ComponentName, AName) then
+      Exit(Candidate);
+end;
+
+procedure Check(const ACondition: Boolean; const AMessage: string);
+begin
+  if not ACondition then
+    Failures.Add(AMessage);
+end;
+
+{ Every key a control expectation may carry.
+
+  Kept here rather than inferred, so that adding a check means adding its name
+  and forgetting to implement one is caught by the harness itself. }
+const
+  KnownControlKeys: array[0..20] of string = (
+    'form', 'name', 'text_fits',
+    'planned_left_equals', 'planned_left_at_least', 'planned_left_at_most',
+    'planned_top_equals', 'planned_top_at_least',
+    'planned_width_equals', 'planned_width_at_least', 'planned_width_at_most',
+    'planned_height_equals', 'planned_height_at_least', 'planned_height_at_most',
+    'planned_right_at_most', 'planned_bottom_at_most',
+    'font_at_least', 'font_at_most',
+    'right_edge_unchanged', 'centre_unchanged', 'inside_control');
+
+procedure CheckKnownKeys(const AObject: TJSONObject;
+  const AFormName, AControlName: string);
+var
+  Pair: TJSONPair;
+  Known: string;
+  Recognised: Boolean;
+  Index: Integer;
+begin
+  for Index := 0 to AObject.Count - 1 do
+  begin
+    Pair := AObject.Pairs[Index];
+    Recognised := False;
+    for Known in KnownControlKeys do
+      if SameText(Pair.JsonString.Value, Known) then
+      begin
+        Recognised := True;
+        Break;
+      end;
+    if not Recognised then
+      Failures.Add(Format('%s.%s carries "%s", which this harness does not ' +
+        'check - the expectation would pass whatever the planner did',
+        [AFormName, AControlName, Pair.JsonString.Value]));
+  end;
+end;
+
+function NumberOf(const AObject: TJSONObject; const AName: string;
+  out AValue: Double): Boolean;
+var
+  Value: TJSONValue;
+begin
+  AValue := 0;
+  Value := AObject.GetValue(AName);
+  Result := (Value <> nil) and Value.TryGetValue<Double>(AValue);
+end;
+
+function FlagOf(const AObject: TJSONObject; const AName: string): Boolean;
+var
+  Value: TJSONValue;
+begin
+  Value := AObject.GetValue(AName);
+  Result := (Value is TJSONBool) and TJSONBool(Value).AsBoolean;
+end;
+
+procedure CheckControlBoundsExpectation(const AReview: TLocalizationReview;
+  const AExpectation: TJSONObject; const AControl: TLayoutControl);
+var
+  BoundName: string;
+  BoundControl: TLayoutControl;
+  Expected: Double;
+begin
+  if NumberOf(AExpectation, 'planned_left_at_least', Expected) then
+    Check(AControl.PlannedLeft >= Expected - 1,
+      Format('%s.%s left is %.0f, expected at least %.0f',
+        [AControl.FormName, AControl.ComponentName, AControl.PlannedLeft,
+         Expected]));
+
+  if NumberOf(AExpectation, 'planned_top_at_least', Expected) then
+    Check(AControl.PlannedTop >= Expected - 1,
+      Format('%s.%s top is %.0f, expected at least %.0f',
+        [AControl.FormName, AControl.ComponentName, AControl.PlannedTop,
+         Expected]));
+
+  if NumberOf(AExpectation, 'planned_width_at_most', Expected) then
+    Check(AControl.PlannedWidth <= Expected + 1,
+      Format('%s.%s width is %.0f, expected no more than %.0f',
+        [AControl.FormName, AControl.ComponentName, AControl.PlannedWidth,
+         Expected]));
+
+  if NumberOf(AExpectation, 'planned_width_at_least', Expected) then
+    Check(AControl.PlannedWidth >= Expected - 1,
+      Format('%s.%s width is %.0f, expected at least %.0f',
+        [AControl.FormName, AControl.ComponentName, AControl.PlannedWidth,
+         Expected]));
+
+  if NumberOf(AExpectation, 'planned_height_at_least', Expected) then
+    Check(AControl.PlannedHeight >= Expected - 1,
+      Format('%s.%s height is %.0f, expected at least %.0f',
+        [AControl.FormName, AControl.ComponentName, AControl.PlannedHeight,
+         Expected]));
+
+  if NumberOf(AExpectation, 'planned_height_at_most', Expected) then
+    Check(AControl.PlannedHeight <= Expected + 1,
+      Format('%s.%s height is %.0f, expected no more than %.0f',
+        [AControl.FormName, AControl.ComponentName, AControl.PlannedHeight,
+         Expected]));
+
+  if NumberOf(AExpectation, 'planned_right_at_most', Expected) then
+    Check(AControl.PlannedLeft + AControl.PlannedWidth <= Expected + 1,
+      Format('%s.%s right edge is %.0f, expected no more than %.0f',
+        [AControl.FormName, AControl.ComponentName,
+         AControl.PlannedLeft + AControl.PlannedWidth, Expected]));
+
+  if NumberOf(AExpectation, 'planned_bottom_at_most', Expected) then
+    Check(AControl.PlannedTop + AControl.PlannedHeight <= Expected + 1,
+      Format('%s.%s bottom edge is %.0f, expected no more than %.0f',
+        [AControl.FormName, AControl.ComponentName,
+         AControl.PlannedTop + AControl.PlannedHeight, Expected]));
+
+  BoundName := AExpectation.GetValue<string>('inside_control', '');
+  if BoundName <> '' then
+  begin
+    BoundControl := FindControl(AReview, AControl.FormName, BoundName);
+    if BoundControl = nil then
+      Failures.Add(Format('%s.%s inside bound %s was not found',
+        [AControl.FormName, AControl.ComponentName, BoundName]))
+    else
+    begin
+      Check(AControl.PlannedLeft >= BoundControl.PlannedLeft - 1,
+        Format('%s.%s left %.0f is outside %s left %.0f',
+          [AControl.FormName, AControl.ComponentName, AControl.PlannedLeft,
+           BoundName, BoundControl.PlannedLeft]));
+      Check(AControl.PlannedTop >= BoundControl.PlannedTop - 1,
+        Format('%s.%s top %.0f is outside %s top %.0f',
+          [AControl.FormName, AControl.ComponentName, AControl.PlannedTop,
+           BoundName, BoundControl.PlannedTop]));
+      Check(AControl.PlannedLeft + AControl.PlannedWidth <=
+          BoundControl.PlannedLeft + BoundControl.PlannedWidth + 1,
+        Format('%s.%s right %.0f is outside %s right %.0f',
+          [AControl.FormName, AControl.ComponentName,
+           AControl.PlannedLeft + AControl.PlannedWidth, BoundName,
+           BoundControl.PlannedLeft + BoundControl.PlannedWidth]));
+      Check(AControl.PlannedTop + AControl.PlannedHeight <=
+          BoundControl.PlannedTop + BoundControl.PlannedHeight + 1,
+        Format('%s.%s bottom %.0f is outside %s bottom %.0f',
+          [AControl.FormName, AControl.ComponentName,
+           AControl.PlannedTop + AControl.PlannedHeight, BoundName,
+           BoundControl.PlannedTop + BoundControl.PlannedHeight]));
+    end;
+  end;
+end;
+
+{ No control may be planned on top of a neighbour it was clear of.
+
+  Every layout complaint from five languages of field testing reduced to this
+  one sentence. A caption grows for a longer translation and lands on the
+  checkbox beside it; a button wraps to two lines and drops onto the grid
+  below; two buttons grow taller and cover the labels they sit against. Each
+  looked like a separate fault and each was the same one: something was made
+  bigger and nothing asked what was already there.
+
+  Contracts existed either side of all of it - a button keeping its place, a
+  caption stopping at the button beside it, padding above a grid - and every
+  one passed, because a fixture with one control and nothing beneath it cannot
+  catch a control growing onto its neighbour.
+
+  So this is not another fixture. It runs on every fixture there is, which is
+  what makes it worth having: sixty-nine forms are asked the question at once,
+  and any form added later is asked it for free.
+
+  Overlap that was drawn deliberately is left alone - designers do put a label
+  over an image - so the comparison is against the designed geometry rather
+  than against zero. Only overlap the plan introduced counts.
+
+  Four fixtures declare a collision they still have, with the reason, in their
+  own expected.json. That is deliberate: the guard is live everywhere else
+  while the planner work that resolves them is done separately, and deleting a
+  declaration is how that work proves itself. An undeclared collision fails. }
+function PlacedByAlignment(const AControl: TLayoutControl): Boolean;
+var
+  Value: string;
+begin
+  { A panel with Align set is put where its edge constant says, and its Left
+    and Width describe where it was drawn rather than where it will appear.
+    Mirroring changes the constant, not the numbers, so comparing the numbers
+    reports a collision that will not happen. }
+  Value := Trim(AControl.Align);
+  Result := (Value <> '') and not SameText(Value, 'alNone') and
+    not SameText(Value, 'None') and not SameText(Value, 'TAlignLayout.None');
+end;
+
+function RectanglesMeet(const ALeft, ATop, AWidth, AHeight,
+  BLeft, BTop, BWidth, BHeight: Double): Boolean;
+const
+  { A pixel of contact is a rounding artefact, not a collision. }
+  Tolerance = 1.0;
+begin
+  Result := (ALeft + AWidth - Tolerance > BLeft) and
+            (BLeft + BWidth - Tolerance > ALeft) and
+            (ATop + AHeight - Tolerance > BTop) and
+            (BTop + BHeight - Tolerance > ATop);
+end;
+
+{ A collision this fixture already knows about and has explained. }
+function OverlapIsDeclared(const ARoot: TJSONObject;
+  const AFirst, ASecond: string): Boolean;
+var
+  Declared: TJSONArray;
+  Item: TJSONValue;
+  Pair: TJSONObject;
+  A, B: string;
+begin
+  Result := False;
+  if ARoot = nil then
+    Exit;
+  Declared := ARoot.GetValue('known_overlaps') as TJSONArray;
+  if Declared = nil then
+    Exit;
+  for Item in Declared do
+  begin
+    if not (Item is TJSONObject) then
+      Continue;
+    Pair := TJSONObject(Item);
+    A := Pair.GetValue<string>('a', '');
+    B := Pair.GetValue<string>('b', '');
+    if (SameText(A, AFirst) and SameText(B, ASecond)) or
+       (SameText(A, ASecond) and SameText(B, AFirst)) then
+      Exit(True);
+  end;
+end;
+
+procedure CheckNoNewOverlap(const AReview: TLocalizationReview;
+  const ARoot: TJSONObject);
+var
+  First, Second: TLayoutControl;
+  IndexA, IndexB: Integer;
+begin
+  for IndexA := 0 to AReview.Controls.Count - 1 do
+  begin
+    First := AReview.Controls[IndexA];
+    if not First.HasPosition or not First.HasSize or
+      PlacedByAlignment(First) then
+      Continue;
+    for IndexB := IndexA + 1 to AReview.Controls.Count - 1 do
+    begin
+      Second := AReview.Controls[IndexB];
+      if not Second.HasPosition or not Second.HasSize or
+        PlacedByAlignment(Second) then
+        Continue;
+      { Siblings only. A child overlapping its own container is the normal
+        state of affairs and says nothing. }
+      if not SameText(First.FormName, Second.FormName) or
+        not SameText(First.ParentName, Second.ParentName) then
+        Continue;
+      if RectanglesMeet(First.Left, First.Top, First.Width, First.Height,
+        Second.Left, Second.Top, Second.Width, Second.Height) then
+        Continue;
+      if not RectanglesMeet(
+        First.PlannedLeft, First.PlannedTop, First.PlannedWidth,
+          First.PlannedHeight,
+        Second.PlannedLeft, Second.PlannedTop, Second.PlannedWidth,
+          Second.PlannedHeight) then
+        Continue;
+      if OverlapIsDeclared(ARoot, First.ComponentName,
+        Second.ComponentName) then
+        Continue;
+      Failures.Add(Format(
+        '%s: %s and %s were clear of each other and are planned on top of ' +
+        'one another - %s at (%.0f,%.0f %.0fx%.0f), %s at (%.0f,%.0f %.0fx%.0f)',
+        [First.FormName, First.ComponentName, Second.ComponentName,
+         First.ComponentName, First.PlannedLeft, First.PlannedTop,
+         First.PlannedWidth, First.PlannedHeight,
+         Second.ComponentName, Second.PlannedLeft, Second.PlannedTop,
+         Second.PlannedWidth, Second.PlannedHeight]));
+    end;
+  end;
+end;
+
+procedure CheckControlExpectation(const AReview: TLocalizationReview;
+  const AExpectation: TJSONObject);
+var
+  FormName, ControlName, Why: string;
+  Control: TLayoutControl;
+  Expected: Double;
+  Fits: Boolean;
+begin
+  FormName := AExpectation.GetValue<string>('form', '');
+  ControlName := AExpectation.GetValue<string>('name', '');
+  Control := FindControl(AReview, FormName, ControlName);
+  if Control = nil then
+  begin
+    Failures.Add(Format('%s.%s was not found in the scanned model',
+      [FormName, ControlName]));
+    Exit;
+  end;
+
+  { An expectation this harness does not understand is a failure.
+
+    planned_width_at_least was used by the grid-heading contract from the day
+    it was written and was never implemented here. Reading an unknown key as
+    "nothing to check" meant that contract asserted only that the column held
+    its text - which a column with no text at all satisfies trivially - so the
+    guarantee it was written to defend had never once been tested, and the
+    fault it was meant to catch shipped.
+
+    A contract that cannot fail is worse than no contract: it occupies the
+    place where a real one would go and reports success while doing it. }
+  CheckKnownKeys(AExpectation, FormName, ControlName);
+
+  if FlagOf(AExpectation, 'text_fits') then
+  begin
+    { Called on its own line: as one expression the reason was read before the
+      test had written it, so every failure of this kind reported blank. }
+    Fits := TextFits(Control, Why);
+    Check(Fits, Format('%s.%s does not hold its text: %s',
+      [FormName, ControlName, Why]));
+  end;
+
+  if FlagOf(AExpectation, 'right_edge_unchanged') then
+    Check(Abs((Control.PlannedLeft + Control.PlannedWidth) -
+      (Control.Left + Control.Width)) <= 1,
+      Format('%s.%s right edge moved from %.0f to %.0f',
+        [FormName, ControlName, Control.Left + Control.Width,
+         Control.PlannedLeft + Control.PlannedWidth]));
+
+  if FlagOf(AExpectation, 'centre_unchanged') then
+    Check(Abs((Control.PlannedLeft + Control.PlannedWidth / 2) -
+      (Control.Left + Control.Width / 2)) <= 2,
+      Format('%s.%s centre moved from %.0f to %.0f',
+        [FormName, ControlName, Control.Left + Control.Width / 2,
+         Control.PlannedLeft + Control.PlannedWidth / 2]));
+
+  if NumberOf(AExpectation, 'planned_left_equals', Expected) then
+    Check(Abs(Control.PlannedLeft - Expected) <= 1,
+      Format('%s.%s left is %.0f, expected %.0f',
+        [FormName, ControlName, Control.PlannedLeft, Expected]));
+
+  if NumberOf(AExpectation, 'planned_top_equals', Expected) then
+    Check(Abs(Control.PlannedTop - Expected) <= 1,
+      Format('%s.%s top is %.0f, expected %.0f',
+        [FormName, ControlName, Control.PlannedTop, Expected]));
+
+  if NumberOf(AExpectation, 'planned_height_equals', Expected) then
+    Check(Abs(Control.PlannedHeight - Expected) <= 1,
+      Format('%s.%s height is %.0f, expected %.0f',
+        [FormName, ControlName, Control.PlannedHeight, Expected]));
+
+  if NumberOf(AExpectation, 'planned_width_equals', Expected) then
+    Check(Abs(Control.PlannedWidth - Expected) <= 1,
+      Format('%s.%s width is %.0f, expected %.0f',
+        [FormName, ControlName, Control.PlannedWidth, Expected]));
+
+  if NumberOf(AExpectation, 'planned_left_at_most', Expected) then
+    Check(Control.PlannedLeft <= Expected + 1,
+      Format('%s.%s left is %.0f, expected no more than %.0f',
+        [FormName, ControlName, Control.PlannedLeft, Expected]));
+
+  CheckControlBoundsExpectation(AReview, AExpectation, Control);
+
+  if NumberOf(AExpectation, 'font_at_least', Expected) then
+    Check(PlannedFontOf(Control) >= Expected - 0.01,
+      Format('%s.%s font is %.1f, expected at least %.1f',
+        [FormName, ControlName, PlannedFontOf(Control), Expected]));
+
+  if NumberOf(AExpectation, 'font_at_most', Expected) then
+    Check(PlannedFontOf(Control) <= Expected + 0.01,
+      Format('%s.%s font is %.1f, expected no more than %.1f',
+        [FormName, ControlName, PlannedFontOf(Control), Expected]));
+end;
+
+{ Every named control ends up the same width, and spaced at one even pitch. }
+{ What actually reaches the pack.
+
+  The expectations above describe the plan, and for a long time that was all
+  anything checked. The plan and the pack are not the same thing: a value is
+  planned, and then a separate pass decides whether to write it down. Twice now
+  a correct plan has been silently not written - wrapping that matched what the
+  framework was assumed to do, and a frame enlarged to hold its contents, which
+  carries no text of its own and so fell outside the rule that only controls
+  with translated text have their size stated. Both looked perfect in the plan
+  and did nothing on screen.
+
+  A contract may therefore carry a "proposals" array, each entry naming a
+  component and a property that must appear among the emitted proposals. }
+procedure CheckProposals(const AReview: TLocalizationReview;
+  const ARoot: TJSONObject; const AFormName: string);
+var
+  Expectations: TJSONArray;
+  Item: TJSONValue;
+  Expectation: TJSONObject;
+  ComponentName: string;
+  PropertyName: string;
+  Proposal: TLayoutProposal;
+  Found: Boolean;
+  ExpectedValue: string;
+  ActualValue: string;
+  ExpectedDecision: string;
+  ActualDecision: string;
+  MustBeAbsent: Boolean;
+begin
+  Expectations := ARoot.GetValue('proposals') as TJSONArray;
+  if Expectations = nil then
+    Exit;
+  for Item in Expectations do
+  begin
+    if not (Item is TJSONObject) then
+      Continue;
+    Expectation := TJSONObject(Item);
+    ComponentName := Expectation.GetValue<string>('name', '');
+    PropertyName := Expectation.GetValue<string>('property', '');
+    { A value may be named as well as a property. Some decisions are not
+      numbers - which way a control is anchored, which edge its text sits
+      against - and for those the property existing says nothing useful. }
+    ExpectedValue := Expectation.GetValue<string>('value', '');
+    { And whether it starts accepted. A proposal left pending is dropped by
+      the exporter in silence, so a plan can be perfectly right and still
+      never reach the application - which is exactly what happened to every
+      right-to-left decision. }
+    ExpectedDecision := Expectation.GetValue<string>('decision', '');
+    { A contract may also require that nothing was proposed at all. Some of
+      the most important decisions the planner makes are decisions not to
+      act - on a control the application positions itself, for instance. }
+    MustBeAbsent := Expectation.GetValue<Boolean>('absent', False);
+    Found := False;
+    ActualValue := '';
+    ActualDecision := '';
+    for Proposal in AReview.Proposals do
+      if SameText(Proposal.ComponentName, ComponentName) and
+        SameText(Proposal.PropertyName, PropertyName) then
+      begin
+        ActualValue := Proposal.ProposedValue;
+        ActualDecision := Proposal.Decision;
+        Found := ((ExpectedValue = '') or
+          SameText(Proposal.ProposedValue, ExpectedValue)) and
+          ((ExpectedDecision = '') or
+           SameText(Proposal.Decision, ExpectedDecision));
+        if Found then
+          Break;
+      end;
+    if MustBeAbsent then
+    begin
+      if ActualValue <> '' then
+        Failures.Add(Format('%s.%s proposes %s = %s, and should propose ' +
+          'nothing at all.',
+          [AFormName, ComponentName, PropertyName, ActualValue]));
+      Continue;
+    end;
+    if not Found then
+      if ActualValue <> '' then
+        Failures.Add(Format('%s.%s proposes %s = %s (%s), expected %s (%s)',
+          [AFormName, ComponentName, PropertyName, ActualValue,
+           ActualDecision, ExpectedValue, ExpectedDecision]))
+      else
+        Failures.Add(Format('%s.%s has no %s proposal; the plan may be right ' +
+          'and the pack still silent.',
+          [AFormName, ComponentName, PropertyName]));
+  end;
+end;
+
+procedure CheckGroups(const AReview: TLocalizationReview;
+  const ARoot: TJSONObject; const AFormName: string);
+var
+  Names: TJSONArray;
+  Item: TJSONValue;
+  Control, Previous: TLayoutControl;
+  FirstWidth, FirstFont, Pitch, ThisPitch: Double;
+  Index: Integer;
+begin
+  Names := ARoot.GetValue('uniform_width_group') as TJSONArray;
+  if Names <> nil then
+  begin
+    FirstWidth := -1;
+    for Item in Names do
+    begin
+      Control := FindControl(AReview, AFormName, Item.Value);
+      if Control = nil then
+        Continue;
+      if FirstWidth < 0 then
+        FirstWidth := Control.PlannedWidth
+      else
+        Check(Abs(Control.PlannedWidth - FirstWidth) <= 1,
+          Format('%s width is %.0f but the row settled on %.0f',
+            [Item.Value, Control.PlannedWidth, FirstWidth]));
+    end;
+  end;
+
+  { Whatever size a group of paragraphs settles at, they settle at it
+    together. Worth stating on its own rather than leaving it to be implied
+    by a band each control happens to fall in: a band proves both sizes are
+    acceptable, not that they are the same, and two controls can satisfy one
+    band at different sizes with the rule not kept at all. }
+  Names := ARoot.GetValue('uniform_font_group') as TJSONArray;
+  if Names <> nil then
+  begin
+    FirstFont := -1;
+    for Item in Names do
+    begin
+      Control := FindControl(AReview, AFormName, Item.Value);
+      if Control = nil then
+        Continue;
+      if FirstFont < 0 then
+        FirstFont := PlannedFontOf(Control)
+      else
+        Check(Abs(PlannedFontOf(Control) - FirstFont) <= 0.01,
+          Format('%s settled on font %.1f but the group settled on %.1f',
+            [Item.Value, PlannedFontOf(Control), FirstFont]));
+    end;
+  end;
+
+  Names := ARoot.GetValue('even_pitch_group') as TJSONArray;
+  if Names <> nil then
+  begin
+    Previous := nil;
+    Pitch := -1;
+    Index := 0;
+    for Item in Names do
+    begin
+      Control := FindControl(AReview, AFormName, Item.Value);
+      if Control = nil then
+        Continue;
+      if Previous <> nil then
+      begin
+        ThisPitch := Control.PlannedLeft - Previous.PlannedLeft;
+        Check(ThisPitch > 0,
+          Format('%s starts at %.0f which is not to the right of %s at %.0f',
+            [Item.Value, Control.PlannedLeft, Previous.ComponentName,
+             Previous.PlannedLeft]));
+        Check(Control.PlannedLeft >=
+          Previous.PlannedLeft + Previous.PlannedWidth,
+          Format('%s overlaps %s', [Item.Value, Previous.ComponentName]));
+        if Pitch < 0 then
+          Pitch := ThisPitch
+        else
+          Check(Abs(ThisPitch - Pitch) <= 1,
+            Format('%s sits %.0f from its neighbour but the row pitch is %.0f',
+              [Item.Value, ThisPitch, Pitch]));
+      end;
+      Previous := Control;
+      Inc(Index);
+    end;
+  end;
+end;
+
+var
+  ExpectationFileName, FixtureDirectory, CatalogFileName, CatalogText: string;
+  TemporaryCatalog, ContractName, FormName: string;
+  Root, ControlExpectation: TJSONObject;
+  Controls: TJSONArray;
+  Item: TJSONValue;
+  Catalog: TTranslationCatalog;
+  Review: TLocalizationReview;
+  Message: string;
+begin
+  ExitCode := 0;
+  Failures := TStringList.Create;
+  TemporaryCatalog := '';
+  try
+    try
+      if ParamCount < 1 then
+      begin
+        Writeln('Usage: LayoutContracts <expectation.json>');
+        ExitCode := 2;
+        Exit;
+      end;
+
+      ExpectationFileName := ParamStr(1);
+      if not TFile.Exists(ExpectationFileName) then
+      begin
+        Writeln('Expectation not found: ' + ExpectationFileName);
+        ExitCode := 2;
+        Exit;
+      end;
+
+      ContractName := TPath.GetFileNameWithoutExtension(
+        TPath.GetFileNameWithoutExtension(ExpectationFileName));
+      FixtureDirectory := TPath.GetDirectoryName(
+        TPath.GetFullPath(ExpectationFileName));
+
+      Root := TJSONObject.ParseJSONValue(
+        TFile.ReadAllText(ExpectationFileName, TEncoding.UTF8)) as TJSONObject;
+      if Root = nil then
+      begin
+        Writeln('Expectation is not valid JSON: ' + ExpectationFileName);
+        ExitCode := 2;
+        Exit;
+      end;
+      try
+        CatalogFileName := TPath.Combine(FixtureDirectory,
+          Root.GetValue<string>('catalog_file', ''));
+        if not TFile.Exists(CatalogFileName) then
+        begin
+          Writeln('Catalog not found: ' + CatalogFileName);
+          ExitCode := 2;
+          Exit;
+        end;
+
+        { The catalog points at its form through a placeholder so the fixtures
+          can be checked out anywhere. Resolve it into a copy. }
+        CatalogText := TFile.ReadAllText(CatalogFileName, TEncoding.UTF8);
+        CatalogText := StringReplace(CatalogText, '{FIXTUREDIR}',
+          StringReplace(FixtureDirectory, '\', '\\', [rfReplaceAll]),
+          [rfReplaceAll]);
+        TemporaryCatalog := TPath.Combine(TPath.GetTempPath,
+          Format('dat_contract_%s_%d.json', [ContractName, TThread.GetTickCount]));
+        TFile.WriteAllText(TemporaryCatalog, CatalogText, TEncoding.UTF8);
+
+        Catalog := TCatalogJson.LoadFromFile(TemporaryCatalog);
+        try
+          ContractFramework := Catalog.Framework;
+          Review := TLocalizationReviewer.Analyze(Catalog);
+          try
+            FormName := '';
+            Controls := Root.GetValue('controls') as TJSONArray;
+            if Controls <> nil then
+              for Item in Controls do
+                if Item is TJSONObject then
+                begin
+                  ControlExpectation := TJSONObject(Item);
+                  if FormName = '' then
+                    FormName := ControlExpectation.GetValue<string>('form', '');
+                  CheckControlExpectation(Review, ControlExpectation);
+                end;
+            if FormName = '' then
+              FormName := 'ContractForm';
+            CheckProposals(Review, Root, FormName);
+            CheckGroups(Review, Root, FormName);
+            { Asked of every fixture, not only the ones written for it. }
+            CheckNoNewOverlap(Review, Root);
+          finally
+            Review.Free;
+          end;
+        finally
+          Catalog.Free;
+        end;
+      finally
+        Root.Free;
+      end;
+
+      if Failures.Count = 0 then
+        Writeln(Format('  ok    %s', [ContractName]))
+      else
+      begin
+        Writeln(Format('  FAIL  %s', [ContractName]));
+        for Message in Failures do
+          Writeln('          ' + Message);
+        ExitCode := 1;
+      end;
+    except
+      on E: Exception do
+      begin
+        Writeln(Format('  ERROR %s: %s: %s',
+          [ContractName, E.ClassName, E.Message]));
+        ExitCode := 3;
+      end;
+    end;
+  finally
+    if (TemporaryCatalog <> '') and TFile.Exists(TemporaryCatalog) then
+      TFile.Delete(TemporaryCatalog);
+    Failures.Free;
+  end;
+end.

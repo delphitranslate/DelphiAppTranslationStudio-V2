@@ -1,0 +1,188 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://delphitranslate.github.io/source/schemas/development-project.schema.json",
+  "title": "Delphi App Translation Studio Project",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "applicationId",
+    "framework",
+    "sourceLanguage",
+    "entries"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "applicationId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "applicationVersion": {
+      "type": "string"
+    },
+    "framework": {
+      "enum": [
+        "VCL",
+        "FireMonkey"
+      ]
+    },
+    "sourceLanguage": {
+      "type": "string",
+      "minLength": 2
+    },
+    "locale": {
+      "type": "object",
+      "required": [
+        "languageCode",
+        "nativeLanguageName",
+        "textDirection"
+      ],
+      "properties": {
+        "languageCode": {
+          "type": "string"
+        },
+        "nativeLanguageName": {
+          "type": "string"
+        },
+        "textDirection": {
+          "enum": [
+            "ltr",
+            "rtl"
+          ]
+        },
+        "shortDateFormat": {
+          "type": "string"
+        },
+        "longDateFormat": {
+          "type": "string"
+        },
+        "shortTimeFormat": {
+          "type": "string"
+        },
+        "longTimeFormat": {
+          "type": "string"
+        },
+        "decimalSeparator": {
+          "type": "string"
+        },
+        "thousandSeparator": {
+          "type": "string"
+        },
+        "currencySymbol": {
+          "type": "string"
+        }
+      }
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "key",
+          "sourceText",
+          "status"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sourceText": {
+            "type": "string"
+          },
+          "translatedText": {
+            "type": "string"
+          },
+          "formName": {
+            "type": "string"
+          },
+          "componentName": {
+            "type": "string"
+          },
+          "componentClassName": {
+            "type": "string"
+          },
+          "propertyName": {
+            "type": "string"
+          },
+          "sourceFileName": {
+            "type": "string"
+          },
+          "sourceLine": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "sourceKind": {
+            "type": "string"
+          },
+          "sourceChecksum": {
+            "type": "string"
+          },
+          "developerNote": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "needsTranslation",
+              "aiDraft",
+              "machineTranslated",
+              "imported",
+              "edited",
+              "reviewed",
+              "approved",
+              "sourceChanged",
+              "excluded",
+              "obsolete",
+              "error"
+            ]
+          },
+          "translationOrigin": {
+            "enum": [
+              "unknown",
+              "codex",
+              "claude",
+              "google",
+              "deepL",
+              "human",
+              "imported",
+              "suggestion"
+            ]
+          },
+          "translationConfidence": {
+            "enum": [
+              "",
+              "high",
+              "medium",
+              "low"
+            ]
+          },
+          "translationReviewNote": {
+            "type": "string"
+          },
+          "runtimeApplication": {
+            "enum": [
+              "automatic",
+              "manualTranslateText",
+              "notApplied"
+            ]
+          },
+          "runtimeTextRole": {
+            "enum": [
+              "staticText",
+              "dynamicValue",
+              "runtimeTemplate",
+              "dataValue",
+              "identifier",
+              "excluded"
+            ]
+          },
+          "runtimeWiringConfirmed": {
+            "type": "boolean"
+          }
+        }
+      }
+    }
+  }
+}

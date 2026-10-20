@@ -1,0 +1,39 @@
+{
+  "description": "The FireMonkey form receives one framework-neutral MirrorChildren contract. The planner preserves designer coordinates; the runtime mirrors the live visual tree only after application sizing has established the real parent widths.",
+  "catalog_file": "31_right_to_left_mirrors_the_form.catalog.json",
+  "proposals": [
+    {
+      "name": "ContractForm",
+      "property": "MirrorChildren",
+      "value": "True",
+      "decision": "accepted"
+    }
+  ],
+  "controls": [
+    {
+      "form": "ContractForm",
+      "name": "lblName",
+      "planned_left_equals": 16
+    },
+    {
+      "form": "ContractForm",
+      "name": "edtName",
+      "planned_left_equals": 104
+    },
+    {
+      "form": "ContractForm",
+      "name": "btnOk",
+      "planned_left_equals": 230
+    },
+    {
+      "form": "ContractForm",
+      "name": "pnlSide",
+      "planned_left_equals": 20
+    },
+    {
+      "form": "ContractForm",
+      "name": "btnInner",
+      "planned_left_equals": 10
+    }
+  ]
+}

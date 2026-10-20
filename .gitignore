@@ -1,0 +1,37 @@
+# Generated Delphi and local test output
+*.dcu
+*.exe
+*.dll
+*.bpl
+*.dcp
+*.map
+*.rsm
+*.res
+*.RES
+*.identcache
+*.local
+*.stat
+*.pyc
+__pycache__/
+__history/
+Win32/
+Win64/
+
+# Keep the project folders but not their generated contents
+bin/*
+!bin/.gitkeep
+dcu/*
+!dcu/.gitkeep
+export/*
+!export/.gitkeep
+source distributions/*
+!source distributions/.gitkeep
+
+# Machine-specific and temporary files
+*.dproj.local
+*.env
+*.log
+~$*
+.~lock.*#
+__backup/
+__work/

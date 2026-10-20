@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 3,
+  "applicationId": "LayoutContract",
+  "applicationVersion": "",
+  "framework": "VCL",
+  "sourceLanguage": "en-US",
+  "locale": {
+    "languageCode": "xx-XX",
+    "nativeLanguageName": "Contract",
+    "textDirection": "ltr",
+    "shortDateFormat": "dd/mm/yyyy",
+    "longDateFormat": "dddd, d mmmm yyyy",
+    "shortTimeFormat": "h:nn",
+    "longTimeFormat": "h:nn:ss",
+    "decimalSeparator": ",",
+    "thousandSeparator": ".",
+    "currencySymbol": "$"
+  },
+  "entries": [
+    {
+      "key": "ContractForm.grdSchedule.Columns[0].Title.Caption",
+      "sourceText": "Play Date From",
+      "translatedText": "Spielverabredungen",
+      "formName": "ContractForm",
+      "componentName": "grdSchedule",
+      "componentClassName": "TColumn",
+      "propertyName": "Columns[0].Title.Caption",
+      "sourceFileName": "{FIXTUREDIR}\\vcl_06_grid_headers_fit.dfm",
+      "sourceLine": 18,
+      "sourceKind": "Form property",
+      "sourceChecksum": "",
+      "contextKind": "interface text",
+      "textOwnership": "designerAutomatic",
+      "status": "machineTranslated"
+    },
+    {
+      "key": "ContractForm.grdSchedule.Columns[1].Title.Caption",
+      "sourceText": "Play Time",
+      "translatedText": "Spielzeit",
+      "formName": "ContractForm",
+      "componentName": "grdSchedule",
+      "componentClassName": "TColumn",
+      "propertyName": "Columns[1].Title.Caption",
+      "sourceFileName": "{FIXTUREDIR}\\vcl_06_grid_headers_fit.dfm",
+      "sourceLine": 26,
+      "sourceKind": "Form property",
+      "sourceChecksum": "",
+      "contextKind": "interface text",
+      "textOwnership": "designerAutomatic",
+      "status": "machineTranslated"
+    }
+  ]
+}

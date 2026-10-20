@@ -1,0 +1,44 @@
+{
+  "description": "The VCL form receives one framework-neutral MirrorChildren contract. The planner preserves designer coordinates; the runtime mirrors each control within its live immediate parent only after application sizing has established the real widths. The form itself is never moved.",
+  "catalog_file": "vcl_30_right_to_left_mirrors_the_form.catalog.json",
+  "proposals": [
+    {
+      "name": "ContractForm",
+      "property": "MirrorChildren",
+      "value": "True",
+      "decision": "accepted"
+    }
+  ],
+  "controls": [
+    {
+      "form": "ContractForm",
+      "name": "ContractForm",
+      "planned_left_equals": 120
+    },
+    {
+      "form": "ContractForm",
+      "name": "lblName",
+      "planned_left_equals": 16
+    },
+    {
+      "form": "ContractForm",
+      "name": "edtName",
+      "planned_left_equals": 104
+    },
+    {
+      "form": "ContractForm",
+      "name": "btnOk",
+      "planned_left_equals": 230
+    },
+    {
+      "form": "ContractForm",
+      "name": "pnlSide",
+      "planned_left_equals": 20
+    },
+    {
+      "form": "ContractForm",
+      "name": "btnInner",
+      "planned_left_equals": 10
+    }
+  ]
+}
