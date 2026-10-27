@@ -2,7 +2,7 @@
 
 Delphi App Translation Studio helps Delphi developers create, review, and deploy offline language packs for Windows VCL and FireMonkey applications. It reads the language already written in a saved project and supports translation into one or more target languages.
 
-This is the separate public **V2 source repository**. It contains source code, build tools, test contracts, samples, and guides. It does not host a compiled download, GitHub Release, or the public website. Version 1 remains on the existing website until a separate publication decision is made.
+This repository contains the Version 2 source code, build tools, test contracts, samples, and guides. Download the matching Win32/Win64 Studio and component package from the [Version 2.0 release](https://github.com/delphitranslate/DelphiAppTranslationStudio-V2/releases/tag/v2.0.0). The [product website](https://delphitranslate.github.io/) has the download, requirements, and guide links. Keep the files from one release together.
 
 ## What the Studio does
 
@@ -30,7 +30,7 @@ To build locally, open `DelphiAppTranslationStudio.dproj` in RAD Studio. Runtime
 - [Complete Test Guide](docs/pdf/Delphi%20App%20Translation%20Studio%20Complete%20Test%20Guide.pdf)
 - [Wizard-to-Runtime Complete Procedure](docs/pdf/Delphi%20App%20Translation%20Studio%20Wizard-to-Runtime%20Complete%20Procedure.pdf)
 
-Editable DOCX versions are in `docs/guides`. The [release checklist](docs/guides/Release%20Checklist.md) records completed verification and remaining acceptance work.
+Editable DOCX versions are in `docs/guides`. See the [Version 2.0 announcement](docs/guides/Release%20Announcement%202.0.md) for a concise overview.
 
 ## Repository layout
 
